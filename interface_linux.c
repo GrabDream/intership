@@ -513,7 +513,10 @@ netsnmp_arch_interface_container_load(netsnmp_container* container,
         key_t v_key = ftok("/run/.hylab_ifcpus_stat", 0xFF);
         int v_shmid = shmget(v_key, 0, 0); 
         if (v_shmid != -1) {
-            p_vpp_shm_ptr = shmat(v_shmid, NULL, 0); 
+            p_vpp_shm_ptr = shmat(v_shmid, NULL, 0);
+            if (p_vpp_shm_ptr == (void*)-1) {
+                p_vpp_shm_ptr = NULL;
+            }
         }
     }
 //#endif
