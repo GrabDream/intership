@@ -2411,7 +2411,6 @@ DEFUNSH(VTYSH_INTERFACE,
 
     if (argc > 0 && argv[0]) {
         const char *name = argv[0]->arg ? argv[0]->arg : (const char *)argv[0];
-		if_get_by_name(name, VRF_DEFAULT, NULL);
 
         memset(vty->ifname, 0, sizeof(vty->ifname));
         strncpy(vty->ifname, name, sizeof(vty->ifname) - 1);
@@ -2554,6 +2553,57 @@ DEFUN (show_ip_address,
     }
 
     return CMD_SUCCESS;
+}
+
+DEFUN(show_arp,
+	  show_arp_cmd,
+	  "show arp",
+	  SHOW_STR
+	  "ARP table\n")
+{
+	const char *shell_cmd =
+		"ip neigh show | awk 'BEGIN {"
+		"printf \"%-24s %-7s %-17s %-5s %-9s %s\\n\", "
+		"\"Address\", \"HWtype\", \"HWaddress\", \"Flags\", \"Mask\", \"Iface\"}"
+		"{"
+		"if ($0 ~ /FAILED|INCOMPLETE/ || NF < 3) next;"
+		"dev = \"\"; mac = \"\";"
+		"for (i = 1; i <= NF; i++) {"
+		"if ($i == \"dev\" && (i + 1) <= NF) dev = $(i + 1);"
+		"if ($i == \"lladdr\" && (i + 1) <= NF) mac = $(i + 1);"
+		"}"
+		"if (mac == \"\") next;"
+		"printf \"%-24s %-7s %-17s %-5s %-9s %s\\n\", "
+		"$1, \"ether\", mac, \"C\", \"\", dev"
+		"}'";
+	FILE *fp = popen(shell_cmd, "r");
+	if (!fp) {
+		vty_out(vty, "%% Error: Failed to read ARP table.\n");
+		return CMD_WARNING;
+	}
+
+	char buf[256];
+	while (fgets(buf, sizeof(buf), fp)) {
+		vty_out(vty, "%s", buf);
+	}
+	pclose(fp);
+
+	return CMD_SUCCESS;
+}
+
+DEFUN(clear_arp_cache,
+	  clear_arp_cache_cmd,
+	  "clear arp-cache",
+	  "Clear information\n"
+	  "ARP cache\n")
+{
+	if (system("ip neigh flush all > /dev/null 2>&1") != 0) {
+		vty_out(vty, "%% Error: Failed to clear ARP cache.\n");
+		return CMD_WARNING;
+	}
+
+	vty_out(vty, "ARP cache cleared.\n");
+	return CMD_SUCCESS;
 }
 
 DEFUN (show_route_static, show_route_static_cmd,
@@ -2770,24 +2820,240 @@ DEFUN (maintenance_mode,
 	return CMD_SUCCESS;
 }
 
+static int hy_utf8_decode_one(const unsigned char *s, uint32_t *cp, int *len)
+{
+    if (!s || !cp || !len)
+        return 0;
+
+    if (s[0] < 0x80) {
+        *cp = s[0];
+        *len = 1;
+        return 1;
+    }
+
+    if ((s[0] & 0xE0) == 0xC0 && (s[1] & 0xC0) == 0x80) {
+        *cp = ((uint32_t)(s[0] & 0x1F) << 6) | (uint32_t)(s[1] & 0x3F);
+        *len = 2;
+        return 1;
+    }
+
+    if ((s[0] & 0xF0) == 0xE0 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80) {
+        *cp = ((uint32_t)(s[0] & 0x0F) << 12) |
+              ((uint32_t)(s[1] & 0x3F) << 6) |
+              (uint32_t)(s[2] & 0x3F);
+        *len = 3;
+        return 1;
+    }
+
+    if ((s[0] & 0xF8) == 0xF0 && (s[1] & 0xC0) == 0x80 &&
+        (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80) {
+        *cp = ((uint32_t)(s[0] & 0x07) << 18) |
+              ((uint32_t)(s[1] & 0x3F) << 12) |
+              ((uint32_t)(s[2] & 0x3F) << 6) |
+              (uint32_t)(s[3] & 0x3F);
+        *len = 4;
+        return 1;
+    }
+
+    return 0;
+}
+
+static int hy_is_cjk_unified(uint32_t cp)
+{
+    return ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF));
+}
+
+static int hy_validate_web_admin_username(const char *username)
+{
+    const unsigned char *p = (const unsigned char *)username;
+    int ch_count = 0;
+
+    if (!username || !username[0])
+        return 0;
+
+    if (strncasecmp(username, "NMC_", 4) == 0)
+        return 0;
+
+    while (*p) {
+        uint32_t cp = 0;
+        int len = 0;
+        if (!hy_utf8_decode_one(p, &cp, &len))
+            return 0;
+
+        if (len == 1) {
+        	if (!(isalnum((unsigned char)cp) || cp == '_' || cp == '-' || cp == '.'
+				  || cp == '!' || cp == '@' || cp == '#' || cp == '^' || cp == '*'))
+                return 0;
+        } else {
+            if (!hy_is_cjk_unified(cp))
+                return 0;
+        }
+
+        p += len;
+        ch_count++;
+    }
+
+    return (ch_count >= 1 && ch_count <= 31);
+}
+
+static int hy_validate_web_admin_password(const char *password)
+{
+    const char *special = "~!@#$%^&*-+,.;|><";
+    int len = 0;
+    int has_digit = 0, has_lower = 0, has_upper = 0, has_special = 0;
+    int category_count = 0;
+    const unsigned char *p = (const unsigned char *)password;
+
+    if (!password || !password[0])
+        return 0;
+
+    while (*p) {
+        unsigned char c = *p++;
+        len++;
+
+        if (c < 0x21 || c > 0x7E)
+            return 0;
+
+        if (isdigit(c))
+            has_digit = 1;
+        else if (islower(c))
+            has_lower = 1;
+        else if (isupper(c))
+            has_upper = 1;
+        else if (strchr(special, c))
+            has_special = 1;
+        else
+            return 0;
+    }
+
+    if (len < 8 || len > 15)
+        return 0;
+
+    category_count = has_digit + has_lower + has_upper + has_special;
+    return (category_count >= 3);
+}
+
+static int hy_save_web_admin_account(const char *username, const char *password)
+{
+    const char *cfg = "/etc/hy_web_admin.conf";
+    char salt[64];
+    char *enc = NULL;
+    FILE *fp = NULL;
+    time_t now = time(NULL);
+
+    snprintf(salt, sizeof(salt), "$6$%ld$", (long)now);
+    enc = crypt(password, salt);
+    if (!enc)
+        return -1;
+
+    fp = fopen(cfg, "w");
+    if (!fp)
+        return -1;
+
+    fprintf(fp, "username=%s\npassword=%s\n", username, enc);
+    fclose(fp);
+    return 0;
+}
+
+static int hy_validate_web_admin_role(const char *role)
+{
+	if (!role)
+		return 0;
+
+	return (strcasecmp(role, "admin") == 0 ||
+			strcasecmp(role, "reporter") == 0 ||
+			strcasecmp(role, "guest") == 0);
+}
+
+static int hy_save_web_admin_role(const char *username, const char *role)
+{
+	const char *cfg = "/etc/hy_web_admin_role.conf";
+	FILE *fp = fopen(cfg, "w");
+	if (!fp)
+		return -1;
+
+	fprintf(fp, "username=%s\nrole=%s\n", username, role);
+	fclose(fp);
+	return 0;
+}
+
 DEFUN (username_password,
        username_password_cmd,
-       "username WORD password [(32-32)] LINE",
- 	"Assign the privileged level username\n"
-	"Specifies a HIDDEN username will follow\n"      
-	"Assign the privileged level password\n"
-	"Specifies a HIDDEN password will follow\n"
-	"The 'username' password string\n")
+       "username WORD password LINE",
+	  "Web local administrator configuration\n"
+	  "Administrator username\n"
+	  "Set administrator password\n"
+	  "Administrator password\n")
 {
-	//vty_out(vty, "%s\n%s\n", argv[1]->arg, argv[3]->arg);
-	if (0==strncmp("admin", argv[1]->arg, sizeof("admin"))
-		&&0==strncmp(g_hw_sn, argv[3]->arg, 32)){		
-		vty_out(vty, "Login successful, enter the root terminal!\n");
-		exit(0);
+	const char *username = NULL;
+	const char *password = NULL;
+
+	if (argc >= 4) {
+		username = argv[1]->arg ? argv[1]->arg : (const char *)argv[1];
+		password = argv[3]->arg ? argv[3]->arg : (const char *)argv[3];
 	}
-	else{
-		vty_out(vty, "Username or password incorrect!\n");
+
+	if (!username || !password) {
+		vty_out(vty, "%% Error: Missing username/password.\n");
+		return CMD_WARNING;
 	}
+
+	if (!hy_validate_web_admin_username(username)) {
+		vty_out(vty, "%% Error: Invalid username. Allowed: 1-31 chars, letters/digits/_/./-/!/@/#/^/*, Chinese, and must not start with NMC_.\n");
+		return CMD_WARNING;
+	}
+
+	if (!hy_validate_web_admin_password(password)) {
+		vty_out(vty, "%% Error: Invalid password. Length 8-15, include at least 3 classes (digit/lower/upper/special), no Chinese/space/full-width.\n");
+		return CMD_WARNING;
+	}
+
+	if (hy_save_web_admin_account(username, password) != 0) {
+		vty_out(vty, "%% Error: Failed to save web local administrator account.\n");
+		return CMD_WARNING;
+	}
+
+	vty_out(vty, "Web local administrator account configured successfully.\n");
+	return CMD_SUCCESS;
+}
+
+DEFUN (username_role,
+	   username_role_cmd,
+	   "username WORD role <admin|reporter|guest>",
+	   "Web local administrator configuration\n"
+	   "Administrator username\n"
+	   "Set administrator role\n"
+	   "Administrator role\n")
+{
+	const char *username = NULL;
+	const char *role = NULL;
+
+	if (argc >= 4) {
+		username = argv[1]->arg ? argv[1]->arg : (const char *)argv[1];
+		role = argv[3]->arg ? argv[3]->arg : (const char *)argv[3];
+	}
+
+	if (!username || !role) {
+		vty_out(vty, "%% Error: Missing username/role.\n");
+		return CMD_WARNING;
+	}
+
+	if (!hy_validate_web_admin_username(username)) {
+		vty_out(vty, "%% Error: Invalid username. Allowed: 1-31 chars, letters/digits/_/./-/!/@/#/^/*, Chinese, and must not start with NMC_.\n");
+		return CMD_WARNING;
+	}
+
+	if (!hy_validate_web_admin_role(role)) {
+		vty_out(vty, "%% Error: Invalid role. Supported roles: admin, reporter, guest.\n");
+		return CMD_WARNING;
+	}
+
+	if (hy_save_web_admin_role(username, role) != 0) {
+		vty_out(vty, "%% Error: Failed to save web local administrator role.\n");
+		return CMD_WARNING;
+	}
+
+	vty_out(vty, "Web local administrator role configured successfully.\n");
 	return CMD_SUCCESS;
 }
 
@@ -5530,7 +5796,8 @@ void vtysh_hy_system_cmd_init(void)
 	install_element(VIEW_NODE, &show_license_info_cmd);
 	install_element(VIEW_NODE, &show_version_info_cmd);
 
-	//install_element(CONFIG_NODE, &username_password_cmd);
+	install_element(CONFIG_NODE, &username_password_cmd);
+	install_element(CONFIG_NODE, &username_role_cmd);
 	//install_element(CONFIG_NODE, &configuration_reauthentication_cmd);
 	//install_element(CONFIG_NODE, &vtysh_reboot_cmd);
 	install_element(ENABLE_NODE, &vtysh_reboot_cmd);
@@ -5647,6 +5914,15 @@ void vtysh_hy_system_cmd_init(void)
 	//install_element(CONFIG_NODE, &no_ip_address_cmd);
 	//install_element(ENABLE_NODE, &no_ip_address_cmd);
 
+	install_element(VIEW_NODE, &show_arp_cmd);
+	install_element(CONFIG_NODE, &show_arp_cmd);
+	install_element(INTERFACE_NODE, &show_arp_cmd);
+	install_element(ENABLE_NODE, &show_arp_cmd);
+
+	install_element(VIEW_NODE, &clear_arp_cache_cmd);
+	install_element(CONFIG_NODE, &clear_arp_cache_cmd);
+	install_element(INTERFACE_NODE, &clear_arp_cache_cmd);
+	install_element(ENABLE_NODE, &clear_arp_cache_cmd);
 
 	
 }
