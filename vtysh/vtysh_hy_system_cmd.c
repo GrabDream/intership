@@ -2935,24 +2935,30 @@ static int hy_validate_web_admin_password(const char *password)
 
 static int hy_save_web_admin_account(const char *username, const char *password)
 {
-    const char *cfg = "/etc/hy_web_admin.conf";
-    char salt[64];
-    char *enc = NULL;
-    FILE *fp = NULL;
-    time_t now = time(NULL);
+	char cmdBuf[4096] = {0};
+	const char *php_code =
+		"$f=\"/usr/local/lighttpd/user.conf\";"
+		"$u=$argv[1];$p=$argv[2];$pwd=md5($p);$data=array();"
+		"if(file_exists($f)){ $c=file_get_contents($f); $j=json_decode($c,true); if(is_array($j)) $data=$j; }"
+		"$found=false;"
+		"foreach($data as &$it){ if(isset($it[\"name\"]) && $it[\"name\"]===$u){ $it[\"password\"]=$pwd; $found=true; break; }}"
+		"unset($it);"
+		"if(!$found){ $data[]=array(\"pre_define\"=>0,\"auth_method\"=>1,\"role\"=>\"admin\",\"name\"=>$u,\"password\"=>$pwd,\"lastpwdtime\"=>time(),\"status\"=>1); }"
+		"file_put_contents($f,json_encode($data, JSON_UNESCAPED_UNICODE));"
+		"@system(\"cp -af /usr/local/lighttpd/user.conf /home/config/current/ >/dev/null 2>&1\");";
+	int retval = 0;
+	snprintf(cmdBuf, sizeof(cmdBuf),
+		"/usr/local/php/bin/php -r '%s' -- %s %s > /dev/null 2>&1",
+		php_code, hylab_escape_shell_arg(username), hylab_escape_shell_arg(password));
+	retval = system(cmdBuf);
+	if (retval == 0)
+		return 0;
 
-    snprintf(salt, sizeof(salt), "$6$%ld$", (long)now);
-    enc = crypt(password, salt);
-    if (!enc)
-        return -1;
-
-    fp = fopen(cfg, "w");
-    if (!fp)
-        return -1;
-
-    fprintf(fp, "username=%s\npassword=%s\n", username, enc);
-    fclose(fp);
-    return 0;
+	snprintf(cmdBuf, sizeof(cmdBuf),
+		 "php -r '%s' -- %s %s > /dev/null 2>&1",
+		 php_code, hylab_escape_shell_arg(username), hylab_escape_shell_arg(password));
+	retval = system(cmdBuf);
+	return retval == 0 ? 0 : -1;
 }
 
 static int hy_validate_web_admin_role(const char *role)
@@ -2967,14 +2973,31 @@ static int hy_validate_web_admin_role(const char *role)
 
 static int hy_save_web_admin_role(const char *username, const char *role)
 {
-	const char *cfg = "/etc/hy_web_admin_role.conf";
-	FILE *fp = fopen(cfg, "w");
-	if (!fp)
-		return -1;
+	char cmdBuf[4096] = {0};
+	const char *php_code =
+		"$f=\"/usr/local/lighttpd/user.conf\";"
+		"$u=$argv[1];$r=$argv[2];$data=array();"
+		"if(file_exists($f)){ $c=file_get_contents($f); $j=json_decode($c,true); if(is_array($j)) $data=$j; }"
+		"$found=false;"
+		"foreach($data as &$it){ if(isset($it[\"name\"]) && $it[\"name\"]===$u){ $it[\"role\"]=$r; $found=true; break; }}"
+		"unset($it);"
+		"if(!$found){ exit(2); }"
+		"file_put_contents($f,json_encode($data, JSON_UNESCAPED_UNICODE));"
+		"@system(\"cp -af /usr/local/lighttpd/user.conf /home/config/current/ >/dev/null 2>&1\");";
+	int retval = 0;
+	snprintf(cmdBuf, sizeof(cmdBuf),
+		"/usr/local/php/bin/php -r '%s' -- %s %s > /dev/null 2>&1",
+		php_code, hylab_escape_shell_arg(username), hylab_escape_shell_arg(role));
 
-	fprintf(fp, "username=%s\nrole=%s\n", username, role);
-	fclose(fp);
-	return 0;
+	retval = system(cmdBuf);
+	if (retval == 0)
+		return 0;
+
+	snprintf(cmdBuf, sizeof(cmdBuf),
+			 "php -r '%s' -- %s %s > /dev/null 2>&1",
+			 php_code, hylab_escape_shell_arg(username), hylab_escape_shell_arg(role));
+	retval = system(cmdBuf);
+	return retval == 0 ? 0 : -1;
 }
 
 DEFUN (username_password,
@@ -3023,7 +3046,10 @@ DEFUN (username_role,
 	   "Web local administrator configuration\n"
 	   "Administrator username\n"
 	   "Set administrator role\n"
-	   "Administrator role\n")
+	   "Administrator role\n"
+	   "Admin role\n"
+	   "Reporter role\n"
+	   "Guest role\n")
 {
 	const char *username = NULL;
 	const char *role = NULL;
