@@ -9996,7 +9996,7 @@ static void chuangshi_auto_rename_c3000_nk06_serial_ext_card(const char* card_fe
 									}
 								}
 								// HPC22
-								else if ( HPC22 == iCardModel[iCardCur]
+								else if ( HPC22 == iCardModel[iCardCur] )
 								{
 									// TYPE_4_10G_FIBER
 									if ( TYPE_4_10G_FIBER == iCardType[iCardCur] )

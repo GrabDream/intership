@@ -9980,7 +9980,7 @@ static void chuangshi_auto_rename_c3000_nk06_serial_ext_card(const char* card_fe
 			// HPC22 TYPE_4_10G_FIBER
 			else if ( ( ruijie_x_serial_ext_card_entry[sorted_num].mode == ( 'A' + 22 ) ) && ruijie_x_serial_ext_card_entry[sorted_num].ethNum == 4 )
 			{
-				const static unsigned int map[4] = {1, 2, 3, 4};
+				const static unsigned int map[4] = {0, 1, 2, 3};
 
 				for ( eth_index = 0; eth_index < 4; ++eth_index )
 				{
