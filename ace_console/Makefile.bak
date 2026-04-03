@@ -1,0 +1,20 @@
+TARGET=ace_console
+CC=g++
+product?=nologo
+CFLAGS=-D$(product)
+CFLAGS2=-D$(product)
+CFLAGS+=-Wall -O -g -I/usr/include -I/usr/include/ncurses -I../../ace_include
+CFLAGS2+=-Wall -O -g -L/usr/lib -lpthread -lncurses 
+
+SRC=$(wildcard *.cpp)
+OBJS=$(patsubst %.cpp,%.o,$(wildcard *.cpp))
+
+$(TARGET):$(OBJS)
+	$(CC) $(OBJS) $(CFLAGS2) -o $@
+
+%.o: %.cpp
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -rf *.o ace_console 
+
