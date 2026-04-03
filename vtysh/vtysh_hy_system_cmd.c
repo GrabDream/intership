@@ -2943,7 +2943,7 @@ static int hy_save_web_admin_account(const char *username, const char *password)
 		"$found=false;"
 		"foreach($data as &$it){ if(isset($it[\"name\"]) && $it[\"name\"]===$u){ $it[\"password\"]=$pwd; $found=true; break; }}"
 		"unset($it);"
-		"if(!$found){ $data[]=array(\"pre_define\"=>0,\"auth_method\"=>1,\"role\"=>\"admin\",\"name\"=>$u,\"password\"=>$pwd,\"lastpwdtime\"=>time(),\"status\"=>1); }"
+	"if(!$found){ $data[]=array(\"pre_define\"=>0,\"auth_method\"=>1,\"role\"=>\"system_admin\",\"name\"=>$u,\"password\"=>$pwd,\"lastpwdtime\"=>time(),\"status\"=>1); }"
 		"file_put_contents($f,json_encode($data, JSON_UNESCAPED_UNICODE));"
 		"@system(\"cp -af /usr/local/lighttpd/user.conf /home/config/current/ >/dev/null 2>&1\");";
 	int retval = 0;
@@ -2961,43 +2961,90 @@ static int hy_save_web_admin_account(const char *username, const char *password)
 	return retval == 0 ? 0 : -1;
 }
 
-static int hy_validate_web_admin_role(const char *role)
+static const char *hy_normalize_web_admin_role(const char *role)
 {
 	if (!role)
+		return NULL;
+
+	if (strcasecmp(role, "admin") == 0 || strcasecmp(role, "system_admin") == 0)
+		return "system_admin";
+	if (strcasecmp(role, "reporter") == 0 || strcasecmp(role, "reporter_admin") == 0)
+		return "reporter_admin";
+	if (strcasecmp(role, "guest") == 0 || strcasecmp(role, "guest_admin") == 0)
+		return "guest_admin";
+
+	return NULL;
+}
+
+static int hy_validate_web_admin_role(const char *role)
+{
+	return hy_normalize_web_admin_role(role) != NULL;
+}
+
+static int hy_is_web_builtin_admin_account(const char *username)
+{
+	if (!username)
 		return 0;
 
-	return (strcasecmp(role, "admin") == 0 ||
-			strcasecmp(role, "reporter") == 0 ||
-			strcasecmp(role, "guest") == 0);
+	return (strcasecmp(username, "admin") == 0
+		|| strcasecmp(username, "guest") == 0
+		|| strcasecmp(username, "audit") == 0);
 }
 
 static int hy_save_web_admin_role(const char *username, const char *role)
 {
 	char cmdBuf[4096] = {0};
+	const char *normalized_role = hy_normalize_web_admin_role(role);
+	int retval = 0;
+	int exit_code = 0;
+	
+	if (hy_is_web_builtin_admin_account(username))
+		return -2;
+
+	if (!normalized_role)
+		return -1;
+
 	const char *php_code =
 		"$f=\"/usr/local/lighttpd/user.conf\";"
 		"$u=$argv[1];$r=$argv[2];$data=array();"
 		"if(file_exists($f)){ $c=file_get_contents($f); $j=json_decode($c,true); if(is_array($j)) $data=$j; }"
 		"$found=false;"
-		"foreach($data as &$it){ if(isset($it[\"name\"]) && $it[\"name\"]===$u){ $it[\"role\"]=$r; $found=true; break; }}"
+		"foreach($data as &$it){ "
+		"if(isset($it[\"name\"]) && $it[\"name\"]===$u){ "
+		"$name=isset($it[\"name\"])?strtolower($it[\"name\"]):\"\"; "
+		"$is_pre=isset($it[\"pre_define\"]) && intval($it[\"pre_define\"])===1; "
+		"if($is_pre || $name===\"admin\" || $name===\"guest\" || $name===\"audit\"){ exit(3); } "
+		"$it[\"role\"]=$r; $found=true; break; }}"
 		"unset($it);"
 		"if(!$found){ exit(2); }"
 		"file_put_contents($f,json_encode($data, JSON_UNESCAPED_UNICODE));"
 		"@system(\"cp -af /usr/local/lighttpd/user.conf /home/config/current/ >/dev/null 2>&1\");";
-	int retval = 0;
+		
 	snprintf(cmdBuf, sizeof(cmdBuf),
 		"/usr/local/php/bin/php -r '%s' -- %s %s > /dev/null 2>&1",
-		php_code, hylab_escape_shell_arg(username), hylab_escape_shell_arg(role));
+		php_code, hylab_escape_shell_arg(username), hylab_escape_shell_arg(normalized_role));
 
 	retval = system(cmdBuf);
 	if (retval == 0)
 		return 0;
+	if (WIFEXITED(retval)) {
+		exit_code = WEXITSTATUS(retval);
+		if (exit_code == 3)
+			return -2;
+	}
 
 	snprintf(cmdBuf, sizeof(cmdBuf),
 			 "php -r '%s' -- %s %s > /dev/null 2>&1",
-			 php_code, hylab_escape_shell_arg(username), hylab_escape_shell_arg(role));
+			 php_code, hylab_escape_shell_arg(username), hylab_escape_shell_arg(normalized_role));
 	retval = system(cmdBuf);
-	return retval == 0 ? 0 : -1;
+	if (retval == 0)
+		return 0;
+	if (WIFEXITED(retval)) {
+		exit_code = WEXITSTATUS(retval);
+		if (exit_code == 3)
+			return -2;
+	}
+	return -1;
 }
 
 DEFUN (username_password,
@@ -3031,6 +3078,11 @@ DEFUN (username_password,
 		return CMD_WARNING;
 	}
 
+	if (hy_is_web_builtin_admin_account(username)) {
+		vty_out(vty, "%% Error: Permission denied. Built-in accounts admin/guest/audit cannot be modified.\n");
+		return CMD_WARNING;
+	}
+
 	if (hy_save_web_admin_account(username, password) != 0) {
 		vty_out(vty, "%% Error: Failed to save web local administrator account.\n");
 		return CMD_WARNING;
@@ -3053,6 +3105,7 @@ DEFUN (username_role,
 {
 	const char *username = NULL;
 	const char *role = NULL;
+	int rc = 0;
 
 	if (argc >= 4) {
 		username = argv[1]->arg ? argv[1]->arg : (const char *)argv[1];
@@ -3070,15 +3123,20 @@ DEFUN (username_role,
 	}
 
 	if (!hy_validate_web_admin_role(role)) {
-		vty_out(vty, "%% Error: Invalid role. Supported roles: admin, reporter, guest.\n");
+		vty_out(vty, "%% Error: Invalid role. Supported roles: admin/reporter/guest\n");
 		return CMD_WARNING;
 	}
 
-	if (hy_save_web_admin_role(username, role) != 0) {
+	rc = hy_save_web_admin_role(username, role);
+	if (rc == -2) {
+		vty_out(vty, "%% Error: Permission denied. Built-in accounts admin/guest/audit role cannot be modified.\n");
+		return CMD_WARNING;
+	}
+	if (rc != 0)
+	{
 		vty_out(vty, "%% Error: Failed to save web local administrator role.\n");
 		return CMD_WARNING;
 	}
-
 	vty_out(vty, "Web local administrator role configured successfully.\n");
 	return CMD_SUCCESS;
 }
