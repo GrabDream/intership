@@ -409,7 +409,7 @@ int ace_get_port_num( void )
     int     portnum                       = 0;
 
 #if defined(RK_PLATFORM_MT) || defined(RK_PLATFORM_CS03) || defined(E2000Q_PLATFORM) || defined(CS_E2000Q_PLATFORM)
-	fp = popen("/sbin/ifconfig -a|grep Ethernet|grep -E '^ge|^eth' |awk '{print$1}'", "r");
+	fp = popen("/sbin/ifconfig -a|grep Ethernet|grep -E '^ge|^eth|^en' |awk '{print$1}'", "r");
 #else
     fp = popen("lspci | grep 'Ethernet controller'", "r");
 #endif
@@ -897,7 +897,7 @@ int ruijie_check_change_ext_card2( char* pOldFile, char* pNewFile )
 					char szCacheLine[128] = {0};
 
 					//eth0  MGT1  1  MANAGE
-					int iItem = sscanf( szLine, "%[^ ]%*[ ]%[^ ]%*[ ]%[^ ]%*[ ]%[^ ]", szEthName, szNewName, szPair, szEthFlag );
+					int iItem = sscanf( szLine, "%15[^ ]%*[ ]%15[^ ]%*[ ]%7[^ ]%*[ ]%31[^ ]", szEthName, szNewName, szPair, szEthFlag );
 
 					if ( 4 == iItem )
 					{
@@ -987,7 +987,7 @@ int ruijie_check_change_ext_card2( char* pOldFile, char* pNewFile )
 					char szCacheLine[128] = {0};
 
 					//eth0  MGT1  1  MANAGE
-					int iItem = sscanf( szLine, "%[^ ]%*[ ]%[^ ]%*[ ]%[^ ]%*[ ]%[^ ]", szEthName, szNewName, szPair, szEthFlag );
+					int iItem = sscanf( szLine, "%15[^ ]%*[ ]%15[^ ]%*[ ]%7[^ ]%*[ ]%31[^ ]", szEthName, szNewName, szPair, szEthFlag );
 
 					if ( 4 == iItem )
 					{
@@ -15834,5 +15834,4 @@ int ace_is_firewall()
 {
 	return 0;
 }
-
 
