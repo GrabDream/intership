@@ -459,7 +459,7 @@ next_parse:
 		{
 			continue;
 		}
-		snprintf(if_state, sizeof(if_state), "%s", p_if_info->if_up?"on":"down");
+		snprintf(if_state, sizeof(if_state), "%s", p_if_info->if_up?"up":"down");
 		if_speed = p_if_info->if_speed;
 		if (!strncmp(name, "loop", sizeof("loop")-1))
 		{
@@ -588,8 +588,8 @@ void Cprocinfo::read_proc_stat(time_t now, resource_value_t * pvalue)
     int vpp_idle_percentage;
     unsigned int polling_cpus;
 	unsigned int thread_index;
-	unsigned int poll_totals;
-	unsigned int poll_idles;
+	unsigned long long poll_totals;
+	unsigned long long poll_idles;
     fp = fopen("/proc/stat", "r");
     if (fp == NULL) {
         debug_save("Cannot open /proc/stat");
@@ -680,6 +680,10 @@ void Cprocinfo::read_proc_stat(time_t now, resource_value_t * pvalue)
 	for (thread_index = 0; thread_index < VPP_CPU_NUM(p_vpp_ifcpus_stat); thread_index++)
 	{
 	  VPP_CPU_PERTHREAD_STAT_T* p_cpu_stat = P_VPP_CPU_STAT(p_vpp_ifcpus_stat, thread_index);
+	  if (!p_cpu_stat)
+	  {
+	    continue;
+	  }
 	  if (p_cpu_stat->poll_totals[!p_cpu_stat->poll_cursor] >= 2000000)
 	  {
 	   poll_totals += p_cpu_stat->poll_totals[!p_cpu_stat->poll_cursor];
